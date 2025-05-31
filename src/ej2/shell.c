@@ -3,117 +3,210 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <string.h>
+#include <ctype.h>
 
 #define MAX_COMMANDS 200
+#define MAX_ARGS 64
+#define MAX_ALLOWED_ARGS 63  // Se permiten hasta 63 argumentos (sin contar el comando).
+
+// Elimina los espacios al inicio y final de la cadena.
+char* trim(char *str) {
+    while (isspace((unsigned char)*str)) str++;  // Salta espacios al inicio.
+    if (*str == 0) return str;
+    char *end = str + strlen(str) - 1;
+    while (end > str && isspace((unsigned char)*end)) {
+        *end = '\0';  // Reemplaza el espacio por fin de cadena.
+        end--;
+    }
+    return str;
+}
+
+// Separa la línea en argumentos, manejando comillas simples y dobles.
+// Retorna la cantidad de argumentos o -1 si falta cerrar alguna comilla.
+int parse_command(char *command, char **args) {
+    int count = 0;
+    char *p = command;
+    while (*p) {
+        // Omite espacios en blanco.
+        while (*p && isspace((unsigned char)*p)) p++;
+        if (!*p) break;
+        if (*p == '\"' || *p == '\'') {
+            char quote = *p;
+            p++;  // Salta la comilla de apertura.
+            char *start = p;
+            while (*p && *p != quote) p++;  // Busca la comilla de cierre.
+            if (*p != quote) {
+                // Error: falta comilla de cierre.
+                return -1;
+            }
+            int len = p - start;
+            args[count] = malloc(len + 1);
+            if (!args[count]) exit(EXIT_FAILURE);
+            strncpy(args[count], start, len);
+            args[count][len] = '\0';
+            count++;
+            p++;  // Salta la comilla de cierre.
+        } else {
+            char *start = p;
+            while (*p && !isspace((unsigned char)*p)) p++;
+            int len = p - start;
+            args[count] = malloc(len + 1);
+            if (!args[count]) exit(EXIT_FAILURE);
+            strncpy(args[count], start, len);
+            args[count][len] = '\0';
+            count++;
+        }
+    }
+    args[count] = NULL;  // Termina la lista.
+    return count;
+}
+
+// Divide la línea en comandos separados por '|' ignorando los que estén
+// dentro de comillas. Retorna la cantidad de comandos.
+int split_pipeline(char *line, char **cmds) {
+    int count = 0, start = 0;
+    int in_quote = 0;
+    char quote_char = '\0';
+    for (int i = 0; line[i] != '\0'; i++) {
+        char c = line[i];
+        if (in_quote) {
+            if (c == quote_char)
+                in_quote = 0;
+        } else {
+            if (c == '\"' || c == '\'') {
+                in_quote = 1;
+                quote_char = c;
+            } else if (c == '|') {
+                line[i] = '\0'; 
+                cmds[count++] = trim(&line[start]);
+                start = i + 1;
+            }
+        }
+    }
+    cmds[count++] = trim(&line[start]);
+    return count;
+}
 
 int main() {
-
-    char command[256];
+    // Aumentamos el buffer para soportar líneas de comando largas.
+    char command[4096];
     char *commands[MAX_COMMANDS];
     int command_count = 0;
 
     while (1) 
     {
-        printf("Shell> ");
+        // Muestra el prompt solo si se está en modo interactivo.
+        if (isatty(STDIN_FILENO))
+            printf("Shell> ");
         
-        /*Reads a line of input from the user from the standard input (stdin) and stores it in the variable command */
-        fgets(command, sizeof(command), stdin);
+        if (!fgets(command, sizeof(command), stdin))
+            break;
         
-        /* Removes the newline character (\n) from the end of the string stored in command, if present. 
-           This is done by replacing the newline character with the null character ('\0').
-           The strcspn() function returns the length of the initial segment of command that consists of 
-           characters not in the string specified in the second argument ("\n" in this case). */
+        // Quita el salto de línea al final.
         command[strcspn(command, "\n")] = '\0';
 
-        // Skip if no commands were entered
-        if (command_count == 0) continue;
-
-        // Reset command_count for new input
-        command_count = 0;
-
-        /* Tokenizes the command string using the pipe character (|) as a delimiter using the strtok() function. 
-           Each resulting token is stored in the commands[] array. 
-           The strtok() function breaks the command string into tokens (substrings) separated by the pipe character |. 
-           In each iteration of the while loop, strtok() returns the next token found in command. 
-           The tokens are stored in the commands[] array, and command_count is incremented to keep track of the number of tokens found. */
-        char *token = strtok(command, "|");
-        while (token != NULL) 
-        {
-            commands[command_count++] = token;
-            token = strtok(NULL, "|");
+        // Si no hay entrada, continúa.
+        if (strlen(command) == 0)
+            continue;
+        
+        // Si se escribe "exit", termina la shell.
+        if (strcmp(command, "exit") == 0)
+            break;
+        
+        // Verifica que no se use el pipe al inicio o al final.
+        if (command[0] == '|' || command[strlen(command)-1] == '|') {
+            fprintf(stderr, "Error de sintaxis cerca de '|'\n");
+            continue;
         }
 
-        /* You should start programming from here... */
-        // Skip if no commands were entered
-        if (command_count == 0) continue;
-
-        // Create pipes for each pair of consecutive commands
+        // Separa la línea en comandos por el carácter '|' (ignorando comillas).
+        command_count = split_pipeline(command, commands);
+        
+        // Asegura que ninguno de los comandos resultantes esté vacío.
+        int valido = 1;
+        for (int i = 0; i < command_count; i++) {
+            if (strlen(commands[i]) == 0) {
+                fprintf(stderr, "Error de sintaxis: comando vacío entre pipes\n");
+                valido = 0;
+                break;
+            }
+        }
+        if (!valido) continue;
+        
+        // Crea los pipes necesarios para conectar los procesos.
         int pipes[MAX_COMMANDS-1][2];
-        for (int i = 0; i < command_count-1; i++) {
+        for (int i = 0; i < command_count - 1; i++) {
             if (pipe(pipes[i]) == -1) {
                 perror("pipe");
                 exit(EXIT_FAILURE);
             }
         }
-
-        // Process each command
+        
+        // Crea un proceso para cada comando de la tubería.
         for (int i = 0; i < command_count; i++) {
             pid_t pid = fork();
-            
             if (pid == -1) {
                 perror("fork");
                 exit(EXIT_FAILURE);
-            } 
-            else if (pid == 0) { // Child process
-                // Set up input from previous command (if not first command)
+            } else if (pid == 0) { // Proceso hijo
+                // Si NO es el primer comando, redirige la entrada desde el pipe previo.
                 if (i > 0) {
                     dup2(pipes[i-1][0], STDIN_FILENO);
                 }
-                
-                // Set up output to next command (if not last command)
-                if (i < command_count-1) {
+                // Si NO es el último comando, redirige la salida hacia el siguiente pipe.
+                if (i < command_count - 1) {
                     dup2(pipes[i][1], STDOUT_FILENO);
                 }
-                
-                // Close all pipe file descriptors
-                for (int j = 0; j < command_count-1; j++) {
+                // Cierra todos los pipes en el hijo.
+                for (int j = 0; j < command_count - 1; j++) {
                     close(pipes[j][0]);
                     close(pipes[j][1]);
                 }
                 
-                // Parse command into arguments
-                char *args[64];
-                int arg_count = 0;
-                
-                char *arg = strtok(commands[i], " \t");
-                while (arg != NULL) {
-                    args[arg_count++] = arg;
-                    arg = strtok(NULL, " \t");
+                // Si el comando es "exit" dentro de una tubería, simplemente sale.
+                char *cmd_trim = trim(commands[i]);
+                if (strcmp(cmd_trim, "exit") == 0) {
+                    exit(EXIT_SUCCESS);
                 }
-                args[arg_count] = NULL;
                 
-                // Execute command
+                // Separa el comando en argumentos (manejo básico de comillas).
+                char *args[MAX_ARGS];
+                int arg_count = parse_command(commands[i], args);
+                if (arg_count == -1) {
+                    fprintf(stderr, "Error de sintaxis: comilla sin cerrar\n");
+                    exit(EXIT_FAILURE);
+                }
+                // Verifica que no se exceda el número permitido de argumentos (sin contar el comando).
+                if (arg_count > 0 && (arg_count - 1) > MAX_ALLOWED_ARGS) {
+                    fprintf(stderr, "Error: demasiados argumentos\n");
+                    exit(EXIT_FAILURE);
+                }
+                if (arg_count == 0)
+                    exit(EXIT_FAILURE);
+                
+                // Ejecuta el comando.
                 execvp(args[0], args);
                 
-                // If execvp fails
+                // En caso de error al ejecutar, muestra el mensaje y finaliza.
                 perror("execvp");
                 exit(EXIT_FAILURE);
             }
+            // El proceso padre cierra los extremos de los pipes ya usados.
+            if (i > 0) {
+                close(pipes[i-1][0]);
+                close(pipes[i-1][1]);
+            }
         }
         
-        // Parent process: close all pipe file descriptors
-        for (int i = 0; i < command_count-1; i++) {
-            close(pipes[i][0]);
-            close(pipes[i][1]);
+        // Si hay más de un comando, cierra los pipes restantes.
+        if (command_count > 1) {
+            close(pipes[command_count - 2][0]);
+            close(pipes[command_count - 2][1]);
         }
-        
-        // Wait for all child processes to complete
+        // El padre espera a que terminen todos los procesos hijos.
         for (int i = 0; i < command_count; i++) {
             wait(NULL);
         }
-        
-        // Reset command_count for next input
-        command_count = 0;
     }
     return 0;
 }
