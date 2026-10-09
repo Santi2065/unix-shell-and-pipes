@@ -117,6 +117,6 @@ Assignment and skeleton code by the I304 teaching staff at UdeSA.
   title        = {Processes and Pipes in {C}: a Message Ring and a Mini Shell},
   year         = {2025},
   howpublished = {Universidad de San Andr{\'e}s, I304 Computer Architecture and Operating Systems},
-  url          = {https://github.com/Santi2065/TP4-Shell}
+  url          = {https://github.com/Santi2065/unix-shell-and-pipes}
 }
 ```
