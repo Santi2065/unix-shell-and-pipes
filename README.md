@@ -102,7 +102,6 @@ python docs/figures/make_figures.py          # Figures 1–2 (matplotlib)
 | `src/ej1/ring.c` | Ring of processes: argument parsing, pipes, children, parent | Santiago (on a 20-line course skeleton) |
 | `src/ej2/shell.c` | Shell: quote-aware parsing, pipes, fork/exec, waiting | Santiago (on a 47-line course skeleton that only split on `\|`) |
 | `src/ej*/Makefile` | Build | Course |
-| `I304 - Enunciado TP4 Shell.pdf` | Assignment statement (Spanish) | Course |
 | `docs/figures/` | Figure script and style | This README |
 
 ## Acknowledgements
